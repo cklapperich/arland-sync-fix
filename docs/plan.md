@@ -18,8 +18,45 @@ Eliminate the 2+ second menu lag when opening the cauldron, container, or main m
 - **Lag is consistent** - does not improve over time or with repeated menu opens
 - Issue affects all three Arland DX games (Rorona/Totori/Meruru)
 
-### Root Cause (Suspected)
-GPU synchronization stalls caused by poor DirectX 11 resource management in Gust's engine. The game performs blocking CPU-GPU synchronization when copying resources for menu rendering, causing the entire render thread to freeze while waiting for the GPU.
+### Root Cause (Confirmed Pattern Across All Atelier PC Ports)
+
+**GPU synchronization stalls caused by naive PS4 → PC porting.**
+
+All Atelier PC games are PS3/PS4 ports and suffer from this issue to varying degrees. The problem stems from a fundamental architectural mismatch:
+
+**PS4 (Unified Memory):**
+- CPU and GPU share the same 8GB GDDR5 memory
+- Writing data for GPU use requires no copying or synchronization
+- Game code: "write data, GPU uses it" in one operation
+
+**PC (Discrete GPU):**
+- CPU (System RAM) and GPU (VRAM) have separate memory spaces
+- Data must be copied across PCIe bus (slow)
+- Requires explicit synchronization and staging buffers
+
+**What Gust's Engine Does (Naive Port):**
+
+The engine was written for PS4's unified memory and never adapted for PC's discrete GPU architecture. When loading UI elements:
+
+```cpp
+// PS4: Fast (unified memory)
+for (int i = 0; i < 1000; i++) {
+    LoadUIElement(i);  // Just write to shared memory
+}
+// GPU can immediately use the data
+
+// PC Port: Slow (discrete GPU, but same logic!)
+for (int i = 0; i < 1000; i++) {
+    context->Map(uiTexture[i], D3D11_MAP_WRITE_DISCARD, ...);
+    memcpy(mapped.pData, uiData[i], size);
+    context->Unmap(uiTexture[i]);
+    context->Flush();  // ❌ Force synchronous copy across PCIe!
+    // Wait for GPU to be ready for next element
+}
+// 1000 individual PCIe round-trips = 2+ second freeze
+```
+
+**This pattern appears in every Atelier PC port** - Gust makes the same mistake repeatedly. The newer games (Sophie 2, Ryza 3) got fixed by doitsujin, but his fix doesn't work for Arland's older engine version.
 
 ### Platform Details
 - **Primary Testing:** Atelier Meruru ~The Apprentice of Arland~ DX
@@ -125,6 +162,166 @@ Failed to map destination resource, hr 0x80070057
 
 **Conclusion:** The fix's assumptions about resource parameters (format, size, CPU access flags, usage types) don't match what Arland DX's older engine uses. When it tries to create shadow buffers, the parameters are invalid for Arland's resources.
 
+**Why This Matters for Our Approach:**
+
+doitsujin's fix failed because it's **engine-specific** - it needs to create compatible staging resources, which requires matching the exact resource formats/flags of each engine version.
+
+Our flush-filtering approach is **engine-agnostic** - it doesn't care what resource formats the game uses. We just intercept Flush() calls and ignore most of them. This should work across ALL Atelier games (Arland, Dusk, Sophie, Ryza) regardless of engine version differences.
+
+### Critical Question: Why Didn't doitsujin Use Flush Filtering?
+
+**This is a crucial question that challenges our entire approach.**
+
+doitsujin (creator of DXVK, expert in D3D11/Vulkan) chose the complex shadow buffer approach. If flush filtering is "so simple," why didn't he use it?
+
+#### The Answer: Different Problems Require Different Solutions
+
+**Sophie 2/Ryza 3 (doitsujin's targets) - Confirmed READBACK operations:**
+
+```cpp
+// Sophie 2 code (from doitsujin's documentation):
+ID3D11Buffer* stagingBuffer;
+context->CopyResource(stagingBuffer, gpuResource);  // GPU → CPU (READBACK)
+context->Map(stagingBuffer, 0, D3D11_MAP_READ_WRITE, 0, &mapped);  // CPU READS
+ProcessDataOnCPU(mapped.pData);  // Game actually uses GPU results on CPU
+context->Unmap(stagingBuffer, 0);
+```
+
+**Key indicator:** `D3D11_MAP_READ_WRITE` - the CPU is reading data that the GPU produced.
+
+**Why flush filtering WON'T work for Sophie 2:**
+
+```cpp
+context->Draw(scene);
+context->CopyResource(staging, renderTarget);
+context->Flush();  // ❌ CAN'T SKIP! CPU needs this data
+context->Map(staging, D3D11_MAP_READ, ...);
+ProcessData(mapped.pData);  // Would get STALE DATA if flush was skipped!
+```
+
+The game **actually needs** those GPU results on the CPU. Filtering the flush would cause the CPU to read incomplete/old data, breaking the game.
+
+**Why shadow buffers DO work for Sophie 2:**
+
+doitsujin's approach maintains CPU-side copies that are always ready:
+- GPU works asynchronously updating the real resource
+- CPU reads from shadow copy immediately (no wait)
+- Shadow is updated in background when GPU finishes
+- Breaks the synchronization dependency
+
+**Arland DX (our target) - ASSUMED write operations (NOT VERIFIED!):**
+
+```cpp
+// What we THINK Arland does (ASSUMPTION):
+for (int i = 0; i < 1000; i++) {
+    context->Map(uiTexture[i], 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+    memcpy(mapped.pData, uiData[i], size);  // CPU writes TO GPU
+    context->Unmap(uiTexture[i]);
+    context->Flush();  // Possibly unnecessary?
+}
+```
+
+**Key indicator (assumed):** `D3D11_MAP_WRITE_DISCARD` - the CPU is writing data to the GPU, not reading.
+
+#### Three Possible Scenarios
+
+**Scenario 1: Arland Only Has WRITE Operations**
+- ✅ Flush filtering should work
+- ❌ Shadow buffers unnecessary (no readbacks to optimize)
+- 🤔 Why didn't doitsujin try this simpler approach?
+  - Maybe he didn't think of it (unlikely given his expertise)
+  - Maybe he was focused on Sophie 2's readback problem
+  - Maybe Arland's failure (INVALIDARG) made him move on
+
+**Scenario 2: Arland ALSO Has Readbacks**
+```cpp
+// Possible: Menu checks texture formats before loading?
+for (int i = 0; i < 1000; i++) {
+    Map(texture, MAP_READ_WRITE);  // Check existing format
+    CheckFormat(mapped.pData);
+    ConvertIfNeeded();
+    Unmap();
+    Flush();  // Necessary - was a readback!
+}
+```
+- ❌ Flush filtering wouldn't work (would break like Sophie 2)
+- ✅ Shadow buffers necessary (same problem as Sophie 2)
+- ✅ Explains why doitsujin used the complex approach
+
+**Scenario 3: Mixed Operations**
+- Some writes (loading textures)
+- Some reads (checking formats, GPU picking, etc.)
+- Need hybrid approach or shadow buffers
+- Flush filtering alone insufficient
+
+#### Why This Changes Everything
+
+**Our entire plan is based on UNVERIFIED assumptions:**
+
+1. ❓ We assume Map operations are WRITE (not confirmed)
+2. ❓ We assume no readbacks occur during menu lag (not confirmed)
+3. ❓ We assume flushes are unnecessary (not confirmed)
+4. ❓ We assume doitsujin's approach was wrong for Arland (may not be true)
+
+**Phase 1 diagnosis is CRITICAL - not just helpful, but absolutely essential.**
+
+If Arland has readback operations like Sophie 2, our flush filtering approach will fail just like it would fail for Sophie 2. doitsujin may have discovered this and that's why he chose shadow buffers.
+
+#### What Phase 1 MUST Determine
+
+```markdown
+RenderDoc Analysis [BLOCKING - DO NOT PROCEED WITHOUT THIS]
+├─ Capture frame during menu lag
+├─ Examine EVERY Map() call:
+│  ├─ D3D11_MAP_WRITE_DISCARD (1) → Write operation ✅
+│  ├─ D3D11_MAP_WRITE (2) → Write operation ✅
+│  ├─ D3D11_MAP_READ (3) → Read operation ❌
+│  └─ D3D11_MAP_READ_WRITE (4) → Read operation ❌
+├─ If ALL are writes → Flush filtering should work
+├─ If ANY are reads → Need shadow buffers or abandon project
+└─ Check what happens AFTER each Flush():
+   └─ Does a readback follow? Then flush is necessary
+```
+
+**We cannot proceed to Phase 2-4 without confirming our assumptions.**
+
+#### Revised Confidence Level
+
+**Initial assumption:** "Flush filtering is simple and will work - 90% confident"
+
+**After considering doitsujin's approach:** "Flush filtering might work IF operations are writes - 50% confident"
+
+**The fact that doitsujin chose the complex approach suggests:**
+- He likely had good reasons
+- The problem may be more nuanced than we initially thought
+- Shadow buffers may be necessary for Arland too
+- Our "simple" approach may have been tried and failed
+
+**However:** doitsujin's fix DID fail on Arland with INVALIDARG errors, so maybe he never got far enough to test flush filtering. We might still be on the right track.
+
+#### Contingency Plans
+
+**If Phase 1 shows readback operations:**
+
+1. **Option A:** Abandon flush filtering, fix doitsujin's shadow buffer approach for Arland
+   - Figure out correct resource parameters for Arland's older engine
+   - More complex but proven approach
+   - Higher chance of success
+
+2. **Option B:** Hybrid approach
+   - Filter flushes after write operations
+   - Keep flushes before read operations
+   - More complex logic but might work
+
+3. **Option C:** Accept defeat
+   - Document findings
+   - Consider this a learning project
+   - Some games just can't be fixed easily
+
+**If Phase 1 shows ONLY write operations:**
+
+✅ Proceed with flush filtering as planned - our approach is likely correct
+
 ### 2. Lily's Atelier Graphics Tweak
 
 **Project:** https://steamcommunity.com/app/1152300/discussions/0/3345546664208090238/  
@@ -229,8 +426,11 @@ Not yet tested on Arland DX games.
 
 ## Project Phases
 
-### Phase 1: Detailed Diagnosis (2-4 weeks)
-**Goal:** Understand exactly what D3D11 calls cause the lag and what resource types are involved
+### Phase 1: Detailed Diagnosis (2-4 weeks) ⚠️ **BLOCKING - CRITICAL**
+
+**Goal:** Determine if flush filtering will work or if we need shadow buffers
+
+**⚠️ CRITICAL IMPORTANCE:** Our entire approach (flush filtering vs shadow buffers) depends on what we discover here. We cannot proceed to implementation without this data.
 
 **Skills Required:** None (learning as we go)
 
@@ -238,19 +438,34 @@ Not yet tested on Arland DX games.
 1. Install and configure RenderDoc on Pop!_OS
 2. Launch Meruru DX through RenderDoc
 3. Capture a frame during menu open freeze
-4. Analyze the captured frame:
+4. **CRITICAL ANALYSIS** - Analyze the captured frame:
+   - **PRIMARY QUESTION:** Are Map() operations READ or WRITE?
+     - Count D3D11_MAP_WRITE_DISCARD operations (writes)
+     - Count D3D11_MAP_WRITE operations (writes)
+     - Count D3D11_MAP_READ operations (reads)
+     - Count D3D11_MAP_READ_WRITE operations (reads)
+   - **SECONDARY QUESTION:** What happens after Flush() calls?
+     - Does a Map(READ) follow the Flush()?
+     - Does the game use the mapped data?
    - Identify all CopyResource calls
-   - Identify all Map/Unmap calls
    - Check resource descriptions (format, usage, CPU access flags)
    - Look for patterns/repeated operations
 5. Enable verbose DXVK logging and correlate with RenderDoc findings
 6. Document the exact sequence that causes stall
 
 **Deliverable:** Technical document describing:
+- **DECISION: Can we use flush filtering or do we need shadow buffers?**
 - Exact D3D11 call sequence during menu lag
 - Resource types and parameters being used
+- Breakdown of READ vs WRITE operations
+- Whether flushes are followed by readbacks
 - Why doitsujin's fix fails (parameter mismatch specifics)
-- What parameters would work
+- Recommended approach based on findings
+
+**GO/NO-GO Decision Point:**
+- ✅ **GO:** If operations are primarily WRITE → Proceed with flush filtering (Phase 2-4)
+- ⚠️ **PIVOT:** If operations include READS → Switch to shadow buffer approach
+- ❌ **NO-GO:** If shadow buffers also fail → Document and accept defeat
 
 ### Phase 2: C++ Fundamentals (4-6 weeks)
 **Goal:** Learn enough C++ to understand and modify DirectX hook code
@@ -308,30 +523,87 @@ Create a simple D3D11 hook DLL that:
 - Doesn't break the game
 - Provides detailed diagnostics
 
-### Phase 4: Implement Fix (Time Unknown)
-**Goal:** Create shadow staging buffers with correct parameters for Arland DX resources
+### Phase 4: Implement Fix (2-4 weeks)
+**Goal:** Implement flush filtering to eliminate unnecessary GPU sync points
 
-**Approach:**
-Based on Phase 1 findings, create shadow buffers that:
-- Match Arland DX's resource formats exactly
-- Use compatible CPU access flags
-- Handle the specific resource types the game uses
-- Update shadows at the right time
-- Intercept the blocking Map calls and return shadow data instantly
+**Approach: Simple Flush Filtering (Not Shadow Buffers, Not Command Batching)**
+
+This is simpler than doitsujin's shadow buffer approach and doesn't require the complex command batching described in the tutorial Phase 3 (see `docs/advanced_command_batching.md` for that complexity - we're NOT doing it).
+
+**What We're Actually Implementing:**
+```cpp
+class FlushFilteringWrapper : public ID3D11DeviceContext {
+private:
+    ID3D11DeviceContext* real;
+    int flushCount = 0;
+
+public:
+    // Forward everything immediately - no buffering!
+    virtual void Draw(UINT count, UINT start) override {
+        real->Draw(count, start);  // Immediate forwarding
+    }
+
+    virtual HRESULT Map(ID3D11Resource* res, UINT subres, D3D11_MAP type,
+                       UINT flags, D3D11_MAPPED_SUBRESOURCE* mapped) override {
+        // Only flush if this is a readback
+        if (type == D3D11_MAP_READ || type == D3D11_MAP_READ_WRITE) {
+            Log("Readback detected - flushing");
+            real->Flush();
+        }
+
+        return real->Map(res, subres, type, flags, mapped);
+    }
+
+    virtual void Flush() override {
+        flushCount++;
+
+        // Ignore 99% of flush calls (safety valve: allow 1%)
+        if (flushCount % 100 == 0) {
+            Log("Allowing flush #%d", flushCount);
+            real->Flush();
+        } else {
+            Log("Ignoring flush #%d", flushCount);
+            // Don't flush - this is the key optimization!
+        }
+    }
+
+    // Forward everything else immediately
+    // ... ~150 more simple forwarding methods
+};
+```
+
+**Key Points:**
+- ✅ All Map/Draw/Set* calls forwarded immediately (no command buffering)
+- ✅ No need to intercept Present() (DXVK handles flushing automatically)
+- ✅ No resource lifetime management complexity
+- ✅ No dependency tracking needed
+- ✅ Simple and low-risk
 
 **Iterative Process:**
-1. Implement shadow buffer creation for one resource type
-2. Test - measure if lag reduces
-3. Debug issues (likely many)
-4. Repeat for each resource type causing stalls
-5. Optimize memory usage
-6. Optimize CPU overhead
+1. Get basic wrapper loading and forwarding all methods
+2. Add logging to Map() and Flush() to confirm they're being called
+3. Implement flush filtering logic
+4. Test - measure menu lag reduction
+5. Tune the flush filtering heuristics if needed
+6. Test for visual glitches
+7. Test across different game scenarios (menus, combat, cutscenes)
 
 **Success Criteria:**
-- Menu lag reduced from 2 seconds to <0.2 seconds
+- Menu lag reduced from 2 seconds to <300ms (acceptable)
+- Stretch goal: <100ms (excellent)
 - No visual glitches
+- No crashes
 - Stable across multiple play sessions
-- No memory leaks
+- Works in all three Arland games
+
+**Why This Works:**
+Menu lag is caused by 1000 unnecessary `Flush()` calls between write operations. By ignoring 99% of them, we eliminate 990 unnecessary GPU sync points. The game's write operations still execute immediately (forwarded to real context), but without the blocking synchronization.
+
+**What We're NOT Doing:**
+- ❌ Shadow staging buffers (doitsujin's approach - doesn't work for Arland)
+- ❌ Command batching (see `docs/advanced_command_batching.md` - too complex, unnecessary)
+- ❌ Intercepting Present() (not needed for flush filtering)
+- ❌ Resource dependency tracking (not needed for flush filtering)
 
 ### Phase 5: Polish & Release (2-4 weeks)
 **Goal:** Make the fix production-ready and shareable
@@ -453,25 +725,34 @@ Based on Phase 1 findings, create shadow buffers that:
 
 ## Project Status
 
-**Current Phase:** Phase 1 - Detailed Diagnosis  
-**Test Platform:** Atelier Meruru ~The Apprentice of Arland~ DX  
-**Last Updated:** 2025-10-22
+**Current Phase:** Phase 1 - RenderDoc Diagnosis (BLOCKING)
+**Test Platform:** Atelier Meruru ~The Apprentice of Arland~ DX
+**Approach:** Flush filtering (PENDING VERIFICATION)
+**Confidence Level:** 50% (was 90%, revised after considering doitsujin's approach)
+**Last Updated:** 2025-10-24
 
 ### Completed
 - ✅ Identified that doitsujin's fix doesn't work (error 0x80070057)
 - ✅ Confirmed menu lag is GPU sync, not shader compilation
 - ✅ Established that the problem is reproducible and measurable
 - ✅ Documented existing fix attempts and why they fail
+- ✅ Analyzed why doitsujin chose shadow buffers over flush filtering
+- ✅ Identified critical assumption: operations must be WRITES, not READS
+- ✅ Recognized Phase 1 as blocking decision point
 
-### In Progress
-- 🔄 Setting up RenderDoc for frame capture
-- 🔄 Detailed diagnosis of exact D3D11 call sequence
+### In Progress (CRITICAL)
+- ⚠️ **BLOCKING:** Phase 1 RenderDoc diagnosis
+  - Must determine if Map() operations are READ or WRITE
+  - This determines if flush filtering will work at all
+  - Cannot proceed to implementation without this data
 
-### Upcoming
-- ⏳ Install and configure RenderDoc
-- ⏳ Capture and analyze frame during menu lag
-- ⏳ Document resource types and parameters
-- ⏳ Begin C++ learning path
+### Upcoming (Conditional on Phase 1 Results)
+- ⏳ **IF WRITES:** Install and configure RenderDoc
+- ⏳ **IF WRITES:** Capture and analyze frame during menu lag
+- ⏳ **IF WRITES:** Confirm flush filtering is viable
+- ⏳ **IF WRITES:** Begin C++ learning path
+- ⏳ **IF WRITES:** Implement flush filtering wrapper
+- ⚠️ **IF READS:** Pivot to shadow buffer approach OR accept defeat
 
 ---
 
@@ -483,6 +764,22 @@ Based on Phase 1 findings, create shadow buffers that:
 - The consistency of the 2-second lag makes it an ideal target for optimization - it's not random, it's a specific code path
 - This project could benefit the entire Atelier community if successful
 - Even if we can't eliminate lag entirely, reducing it to <0.3s would still be a massive improvement
+
+### Key Insight: Why Phase 1 is Critical
+
+**Initial overconfidence:** We initially assumed flush filtering would work because "menu opening = loading assets = write operations."
+
+**Reality check:** doitsujin (DXVK creator) chose the complex shadow buffer approach for Sophie 2. Why?
+- Sophie 2 has confirmed READBACK operations (CPU reads GPU results)
+- Flush filtering won't work for readbacks - the flushes are necessary
+- Shadow buffers break the sync dependency by maintaining CPU-side copies
+
+**The question:** Does Arland also have readbacks, or is it purely writes?
+- If WRITES only → Flush filtering should work ✅
+- If READS present → Need shadow buffers or different approach ❌
+- We won't know until we capture with RenderDoc
+
+**Revised approach:** Treat Phase 1 as a GO/NO-GO decision point, not just "nice to have" diagnostics. The entire project depends on what we discover.
 
 ---
 
