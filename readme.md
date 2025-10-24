@@ -1,0 +1,1 @@
+Arland Sync Fix. Fix menu lag on arlan dgames. May expand to other Atelier games later, or become a PR into doitsujin atelier-sync-fix
