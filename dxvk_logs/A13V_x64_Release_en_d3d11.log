@@ -1,0 +1,321 @@
+info:  D3D11InternalCreateDevice: Maximum supported feature level: D3D_FEATURE_LEVEL_12_1
+info:  D3D11InternalCreateDevice: Using feature level D3D_FEATURE_LEVEL_11_0
+info:  Creating device:
+info:  NVIDIA GeForce RTX 2080:
+info:    Driver   : NVIDIA 570.172.8
+info:  Queues:
+info:    Graphics : (0, 0)
+info:    Transfer : (1, 0)
+info:    Sparse   : (0, 0)
+info:  Memory:
+info:    Heap 0: 8.0 GiB (DEVICE_LOCAL)
+info:    Budget: 5.48 GiB
+info:      Type  1: DEVICE_LOCAL
+info:      Type  2: DEVICE_LOCAL
+info:    Heap 1: 11.66 GiB
+info:    Budget: 11.66 GiB
+info:      Type  0: (None)
+info:      Type  3: HOST_VISIBLE | HOST_COHERENT
+info:      Type  4: HOST_VISIBLE | HOST_COHERENT | HOST_CACHED
+info:    Heap 2: 246 MiB (DEVICE_LOCAL)
+info:    Budget: 132 MiB
+info:      Type  5: DEVICE_LOCAL | HOST_VISIBLE | HOST_COHERENT
+info:  Enabled extensions:
+info:    VK_EXT_attachment_feedback_loop_layout
+info:    VK_EXT_conservative_rasterization
+info:    VK_EXT_custom_border_color
+info:    VK_EXT_depth_clip_enable
+info:    VK_EXT_depth_bias_control
+info:    VK_EXT_descriptor_buffer
+info:    VK_EXT_extended_dynamic_state3
+info:    VK_EXT_fragment_shader_interlock
+info:    VK_EXT_graphics_pipeline_library
+info:    VK_EXT_line_rasterization
+info:    VK_EXT_memory_priority
+info:    VK_EXT_multi_draw
+info:    VK_EXT_non_seamless_cube_map
+info:    VK_EXT_pageable_device_local_memory
+info:    VK_EXT_robustness2
+info:    VK_EXT_shader_module_identifier
+info:    VK_EXT_swapchain_maintenance1
+info:    VK_EXT_transform_feedback
+info:    VK_EXT_vertex_attribute_divisor
+info:    VK_KHR_external_memory_win32
+info:    VK_KHR_external_semaphore_win32
+info:    VK_KHR_load_store_op_none
+info:    VK_KHR_maintenance5
+info:    VK_KHR_maintenance6
+info:    VK_KHR_pipeline_library
+info:    VK_KHR_present_id
+info:    VK_KHR_present_wait
+info:    VK_KHR_shader_float_controls2
+info:    VK_KHR_swapchain
+info:    VK_KHR_swapchain_mutable_format
+info:    VK_KHR_win32_keyed_mutex
+info:    VK_NV_low_latency2
+info:    VK_NV_raw_access_chains
+info:    VK_NVX_binary_import
+info:    VK_NVX_image_view_handle
+info:  Enabled features:
+info:    depthBiasClamp                 : 1
+info:    depthBounds                    : 1
+info:    depthClamp                     : 1
+info:    drawIndirectFirstInstance      : 1
+info:    dualSrcBlend                   : 1
+info:    fillModeNonSolid               : 1
+info:    fragmentStoresAndAtomics       : 1
+info:    fullDrawIndexUint32            : 1
+info:    geometryShader                 : 1
+info:    imageCubeArray                 : 1
+info:    independentBlend               : 1
+info:    logicOp                        : 1
+info:    multiDrawIndirect              : 1
+info:    multiViewport                  : 1
+info:    occlusionQueryPrecise          : 1
+info:    pipelineStatisticsQuery        : 1
+info:    robustBufferAccess             : 1
+info:    sampleRateShading              : 1
+info:    samplerAnisotropy              : 1
+info:    shaderClipDistance             : 1
+info:    shaderCullDistance             : 1
+info:    shaderFloat64                  : 1
+info:    shaderImageGatherExtended      : 1
+info:    shaderInt16                    : 1
+info:    shaderInt64                    : 1
+info:    shaderUniformBufferArrayDynamicIndexing : 1
+info:    shaderSampledImageArrayDynamicIndexing : 1
+info:    shaderStorageBufferArrayDynamicIndexing : 1
+info:    shaderStorageImageArrayDynamicIndexing : 1
+info:    sparseBinding                  : 1
+info:    sparseResidencyBuffer          : 1
+info:    sparseResidencyImage2D         : 1
+info:    sparseResidencyImage3D         : 1
+info:    sparseResidency2Samples        : 1
+info:    sparseResidency4Samples        : 1
+info:    sparseResidency8Samples        : 1
+info:    sparseResidency16Samples       : 1
+info:    sparseResidencyAliased         : 1
+info:    shaderResourceResidency        : 1
+info:    shaderResourceMinLod           : 1
+info:    tessellationShader             : 1
+info:    textureCompressionBC           : 1
+info:    variableMultisampleRate        : 1
+info:    vertexPipelineStoresAndAtomics : 1
+info:    wideLines                      : 1
+info:    shaderDrawParameters           : 1
+info:    storagePushConstant16          : 1
+info:    bufferDeviceAddress            : 1
+info:    descriptorIndexing             : 1
+info:    shaderUniformTexelBufferArrayDynamicIndexing : 1
+info:    shaderStorageTexelBufferArrayDynamicIndexing : 1
+info:    shaderUniformBufferArrayNonUniformIndexing : 1
+info:    shaderSampledImageArrayNonUniformIndexing : 1
+info:    shaderStorageBufferArrayNonUniformIndexing : 1
+info:    shaderStorageImageArrayNonUniformIndexing : 1
+info:    shaderUniformTexelBufferArrayNonUniformIndexing : 1
+info:    shaderStorageTexelBufferArrayNonUniformIndexing : 1
+info:    descriptorBindingSampledImageUpdateAfterBind : 1
+info:    descriptorBindingUpdateUnusedWhilePending : 1
+info:    descriptorBindingPartiallyBound : 1
+info:    drawIndirectCount              : 1
+info:    hostQueryReset                 : 1
+info:    runtimeDescriptorArray         : 1
+info:    samplerFilterMinmax            : 1
+info:    samplerMirrorClampToEdge       : 1
+info:    scalarBlockLayout              : 1
+info:    shaderFloat16                  : 1
+info:    shaderInt8                     : 1
+info:    shaderOutputViewportIndex      : 1
+info:    shaderOutputLayer              : 1
+info:    timelineSemaphore              : 1
+info:    uniformBufferStandardLayout    : 1
+info:    vulkanMemoryModel              : 1
+info:    dynamicRendering               : 1
+info:    maintenance4                   : 1
+info:    robustImageAccess              : 0
+info:    pipelineCreationCacheControl   : 1
+info:    shaderDemoteToHelperInvocation : 1
+info:    shaderZeroInitializeWorkgroupMemory : 1
+info:    synchronization2               : 1
+info:  VK_EXT_attachment_feedback_loop_layout:
+info:    attachmentFeedbackLoopLayout   : 1
+info:  VK_EXT_conservative_rasterization:
+info:    extConservativeRasterization   : 1
+info:  VK_EXT_custom_border_color:
+info:    customBorderColors             : 1
+info:    customBorderColorWithoutFormat : 1
+info:  VK_EXT_depth_clip_enable:
+info:    depthClipEnable                : 1
+info:  VK_EXT_depth_bias_control:
+info:    depthBiasControl               : 1
+info:    leastRepresentableValueForceUnormRepresentation : 1
+info:    floatRepresentation            : 0
+info:    depthBiasExact                 : 1
+info:  VK_EXT_descriptor_buffer:
+info:    descriptorBuffer               : 1
+info:  VK_EXT_extended_dynamic_state3:
+info:    extendedDynamicState3AlphaToCoverageEnable : 1
+info:    extendedDynamicState3DepthClipEnable : 1
+info:    extendedDynamicState3RasterizationSamples : 1
+info:    extendedDynamicState3SampleMask : 1
+info:    extendedDynamicState3LineRasterizationMode : 1
+info:  VK_EXT_fragment_shader_interlock:
+info:    fragmentShaderSampleInterlock  : 1
+info:    fragmentShaderPixelInterlock   : 1
+info:  VK_EXT_full_screen_exclusive:
+info:    extFullScreenExclusive         : 0
+info:  VK_EXT_graphics_pipeline_library:
+info:    graphicsPipelineLibrary        : 1
+info:  VK_EXT_hdr_metadata:
+info:    extHdrMetadata                 : 0
+info:  VK_EXT_line_rasterization:
+info:    rectangularLines               : 1
+info:    smoothLines                    : 1
+info:  VK_EXT_memory_budget:
+info:    extMemoryBudget                : 1
+info:  VK_EXT_memory_priority:
+info:    memoryPriority                 : 1
+info:  VK_EXT_multi_draw:
+info:    multiDraw                      : 1
+info:  VK_EXT_non_seamless_cube_map:
+info:    nonSeamlessCubeMap             : 1
+info:  VK_EXT_pageable_device_local_memory:
+info:    pageableDeviceLocalMemory      : 1
+info:  VK_EXT_robustness2:
+info:    robustBufferAccess2            : 1
+info:    robustImageAccess2             : 1
+info:    nullDescriptor                 : 1
+info:  VK_EXT_shader_module_identifier:
+info:    shaderModuleIdentifier         : 1
+info:  VK_EXT_shader_stencil_export:
+info:    extShaderStencilExport         : 0
+info:  VK_EXT_swapchain_colorspace:
+info:    extSwapchainColorSpace         : 0
+info:  VK_EXT_swapchain_maintenance1:
+info:    swapchainMaintenance1          : 1
+info:  VK_EXT_transform_feedback:
+info:    transformFeedback              : 1
+info:    geometryStreams                : 1
+info:  VK_EXT_vertex_attribute_divisor:
+info:    vertexAttributeInstanceRateDivisor : 1
+info:    vertexAttributeInstanceRateZeroDivisor : 1
+info:  VK_KHR_external_memory_win32:
+info:    khrExternalMemoryWin32         : 1
+info:  VK_KHR_external_semaphore_win32:
+info:    khrExternalSemaphoreWin32      : 1
+info:  VK_KHR_load_store_op_none:
+info:    khrLoadStoreOpNone             : 1
+info:  VK_KHR_maintenance5:
+info:    maintenance5                   : 1
+info:  VK_KHR_maintenance6:
+info:    maintenance6                   : 1
+info:  VK_KHR_maintenance7:
+info:    maintenance7                   : 0
+info:  VK_KHR_pipeline_library:
+info:    khrPipelineLibrary             : 1
+info:  VK_KHR_present_id:
+info:    presentId                      : 1
+info:  VK_KHR_present_wait:
+info:    presentWait                    : 1
+info:  VK_KHR_shader_float_controls2:
+info:    shaderFloatControls2           : 1
+info:  VK_KHR_swapchain:
+info:    khrSwapchain                   : 1
+info:  VK_KHR_swapchain_mutable_format:
+info:    khrSwapchainMutableFormat      : 1
+info:  VK_KHR_win32_keyed_mutex:
+info:    khrWin32KeyedMutex             : 1
+info:  VK_NV_low_latency2:
+info:    nvLowLatency2                  : 1
+info:  VK_NV_raw_access_chains:
+info:    shaderRawAccessChains          : 1
+info:  VK_NVX_binary_import:
+info:    nvxBinaryImport                : 1
+info:  VK_NVX_image_view_handle:
+info:    nvxImageViewHandle             : 1
+info:  Descriptor sizes (set alignment: 64)
+info:    Sampler              : 4
+info:    Uniform buffer       : 8
+info:    Storage buffer       : 16
+info:    Uniform texel buffer : 16
+info:    Storage texel buffer : 16
+info:    Sampled image        : 4
+info:    Storage image        : 4
+info:  Memory type mask for sparse resources: 0x2
+info:  Memory type mask for buffer resources: 0x3b, usage: 0x219ff
+info:  Creating sampler descriptor heap (8 kB)
+debug: Mapped memory region 0x7570e743b000 - 0x7570e743cfff
+info:  DXVK: Graphics pipeline libraries supported
+info:  Creating resource descriptor heap (8192 kB)
+debug: Mapped memory region 0x7570b53dd000 - 0x7570b5bdcfff
+warn:  D3D11DXGIDevice::QueryInterface: Unknown interface query
+warn:  0ec870a6-5d7e-4c22-8cfc-5baae07616ed
+debug: Compiling shader vs.ffd95107a963e8d4d232117fa31c8919
+info:  Found cache file: C:\users\steamuser\AppData\Local\dxvk\578eb7bc5c246269.dxvk.bin
+debug: Shader cache miss: vs.ffd95107a963e8d4d232117fa31c8919
+info:  DXVK: Using 12 compiler threads
+debug: Mapped memory region 0x7570a0000000 - 0x7570a3ffffff
+debug: Compiling shader fs.3961c2454d94fa9327bf03b7866fa9b5
+debug: Shader cache miss: fs.3961c2454d94fa9327bf03b7866fa9b5
+debug: Compiling shader fs.8840b4ac29b03a808847ee76ebaedad6
+debug: Shader cache miss: fs.8840b4ac29b03a808847ee76ebaedad6
+debug: Compiling shader fs.01402276879cf0c3ec0a518c34b6cb48
+debug: Shader cache miss: fs.01402276879cf0c3ec0a518c34b6cb48
+debug: Compiling shader fs.14c68108df629fb2257fe1e8c159c9d0
+debug: Shader cache miss: fs.14c68108df629fb2257fe1e8c159c9d0
+debug: Compiling shader fs.fb91b046a53d171349feb9e235645041
+debug: Shader cache miss: fs.fb91b046a53d171349feb9e235645041
+debug: Compiling shader fs.ff9ce6cdcddb1eb91a2c44e218e5cb72
+debug: Shader cache miss: fs.ff9ce6cdcddb1eb91a2c44e218e5cb72
+debug: Compiling shader gs.55bd6a6e03ee4361d1ce229e171acd05
+debug: Shader cache miss: gs.55bd6a6e03ee4361d1ce229e171acd05
+debug: Mapped memory region 0x7570b4d98000 - 0x7570b5197fff
+debug: Compiling shader vs.1d0bc236efd015d0881381f5a09d8fbe
+debug: Shader cache miss: vs.1d0bc236efd015d0881381f5a09d8fbe
+debug: Compiling shader fs.2e53bc837438dc3b925238504564b671
+debug: Shader cache miss: fs.2e53bc837438dc3b925238504564b671
+info:  Presenter: Actual swapchain properties:
+info:    Format:       VK_FORMAT_B8G8R8A8_UNORM
+info:    Color space:  VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
+info:    Present mode: VK_PRESENT_MODE_FIFO_KHR (dynamic: yes)
+info:    Buffer size:  2560x1416
+info:    Image count:  5
+debug: Compiling shader vs.30f66dddd9d20821e3bf4c0580d49fb7
+debug: Shader cache miss: vs.30f66dddd9d20821e3bf4c0580d49fb7
+debug: Compiling shader fs.b8cd0f31fb9b705fb84e729e3122e7f0
+debug: Shader cache miss: fs.b8cd0f31fb9b705fb84e729e3122e7f0
+debug: Mapped memory region 0x757050000000 - 0x757053ffffff
+debug: Compiling shader vs.0b1a041227a07147e70f2840b0206fa3
+debug: Shader cache miss: vs.0b1a041227a07147e70f2840b0206fa3
+debug: Compiling shader fs.8a0a06ad35e97f26d3352602839eeba6
+debug: Shader cache miss: fs.8a0a06ad35e97f26d3352602839eeba6
+debug: Compiling shader vs.58489c75b827227c545fad86f2562a29
+debug: Shader cache miss: vs.58489c75b827227c545fad86f2562a29
+debug: Compiling shader fs.40ac5c40295c7af6a9a9220f12f75129
+debug: Shader cache miss: fs.40ac5c40295c7af6a9a9220f12f75129
+debug: Compiling shader vs.b8000c0f972efa7fa602cbf08f2f8f45
+debug: Shader cache miss: vs.b8000c0f972efa7fa602cbf08f2f8f45
+debug: Compiling shader fs.0010f453823e2083ce093659f957b5c9
+debug: Shader cache miss: fs.0010f453823e2083ce093659f957b5c9
+debug: Compiling shader vs.4d0fb8e6cecc0bf54a4cda5e9a8e031a
+debug: Shader cache miss: vs.4d0fb8e6cecc0bf54a4cda5e9a8e031a
+debug: Compiling shader vs.092c8a9ddb684fb2a0050cc6863c97e4
+debug: Shader cache miss: vs.092c8a9ddb684fb2a0050cc6863c97e4
+debug: Compiling shader fs.a10f55547887a51b34f5ff5380e6eb8a
+debug: Shader cache miss: fs.a10f55547887a51b34f5ff5380e6eb8a
+debug: Compiling shader vs.79a5c571124f8763e89985df6e2117cb
+debug: Shader cache miss: vs.79a5c571124f8763e89985df6e2117cb
+debug: Compiling shader fs.5a9526a9781e55e256cea6b1752b3222
+debug: Shader cache miss: fs.5a9526a9781e55e256cea6b1752b3222
+debug: Compiling shader vs.99cb94933b1968b4fd0db24d2861efa1
+debug: Shader cache miss: vs.99cb94933b1968b4fd0db24d2861efa1
+debug: Compiling shader fs.9a63dc258e30c71b1783531d71f376d4
+debug: Shader cache miss: fs.9a63dc258e30c71b1783531d71f376d4
+debug: Compiling shader fs.b23022a2e1ccb0dd17b7783dd070f9fc
+debug: Shader cache miss: fs.b23022a2e1ccb0dd17b7783dd070f9fc
+debug: Compiling shader vs.893badcbf64c8b8f5d8d050a440288fb
+debug: Shader cache miss: vs.893badcbf64c8b8f5d8d050a440288fb
+debug: Compiling shader fs.eafa7d3f0653b828335e0c3f878ae091
+debug: Shader cache miss: fs.eafa7d3f0653b828335e0c3f878ae091
+debug: Compiling shader fs.afeb232e81175d0174a392f0eb7d6f69
+debug: Shader cache miss: fs.afeb232e81175d0174a392f0eb7d6f69
