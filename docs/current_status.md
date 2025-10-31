@@ -1,5 +1,28 @@
 # Current Status
 
+**Problem:** Arland DX games have 1.5s lag when opening menus (Rorona/Totori/Meruru DX on Linux/DXVK)
+
+**Root Cause:** ~3000 GPU CopySubresourceRegion calls per menu open, each forcing CPU-GPU sync
+
+**Current State:** Statistics gathered. Found extremely uniform pattern: ~875-900 copies per menu open, ALL matching `512x512 DYNAMIC→STAGING`. Skipping all copies gives 50% improvement but causes glitches. Need to identify which subset of copies is critical.
+
+**Implementation Status:**
+- ✅ Implemented texture signature-based statistics tracking
+- ✅ Gathered in-game data: 875 copies per menu open, 100% uniform pattern
+- ⏳ Next: Implement selective skipping strategies (Options A→B→C)
+
+**Statistics Results:**
+- Menu open delta: 2975→3850 copies = **875 copies per menu**
+- Pattern: `512x512 DYNAMIC cpu=0x10000 → STAGING cpu=0x20000` (100% of copies)
+- Only 1 other pattern seen: `1x1 STAGING→DEFAULT` (irrelevant)
+
+---
+
+## Background
+
+Context: doitsujin's atelier-sync-fix works for Sophie 2 but NOT for Arland DX games.
+Goal: Adapt the fix to work with Arland's different rendering pipeline.
+
 ## Work Completed
 
 ### Phase 1: Diagnosis
@@ -14,7 +37,7 @@
 - Flush calls ignored successfully (confirmed via logs)
 - Flush filtering had no measurable impact on lag (still 1.5s after DLL removed)
 
-### Phase 1 DXVK Metrics (from earlier testing)
+### DXVK Metrics (from earlier testing)
 During menu opens:
 - Queue submissions: 1-5 baseline → 1000 during menu
 - Queue syncs: 1-5 baseline → 1000 during menu
@@ -49,70 +72,126 @@ Based on doitsujin's Sophie 2 fix (README.md):
 - Issue occurs on Switch port
 - Pattern suggests engine-level problem from PS4 port (unified memory → discrete GPU)
 
-### Why doitsujin's Fix Failed on Arland
-- Error: 0x80070057 (E_INVALIDARG) repeated ~15,000 times
-- Cause: Resource parameter mismatch between Sophie 2 and Arland DX
-- doitsujin's fix creates shadow staging buffers with hardcoded parameters for Sophie 2
-- Arland's older engine uses different resource descriptions
-- Need to discover Arland's actual resource parameters to create compatible shadows
+### Phase 2: Resource Parameter Discovery
+- Hooked CopyResource and CopySubresourceRegion
+- Logged 3200+ copy operations during menu opens
+- Found problematic pattern: ~3000 CopySubresourceRegion calls copying DYNAMIC→STAGING textures
 
-### Not Hooked Yet
-- CopyResource
-- CopySubresourceRegion
-- UpdateSubresource
-- Resource creation (CreateBuffer, CreateTexture2D)
-- Present
+### Phase 2 Findings: Arland vs Sophie 2 Differences
 
-### Not Tested
-- RenderDoc frame capture during menu lag
-- Shadow buffer approach (doitsujin's method)
-- DXVK configuration tweaks
+**Arland's Copy Pattern (512x512 Tex2D, Format 90):**
+```
+DST: STAGING, CPUAccessFlags=0x20000 (READ only), BindFlags=0x0, MiscFlags=0x0
+SRC: DYNAMIC, CPUAccessFlags=0x10000 (WRITE only), BindFlags=0x8, MiscFlags=0x0
+```
 
-## Next Steps (Priority Order)
+**Why doitsujin's fix fails on Arland:**
+- doitsujin's `isCpuWritableResource()` requires `CPUAccessFlags & D3D11_CPU_ACCESS_WRITE`
+- Arland's DST staging textures are READ-only (0x20000), not READ+WRITE
+- Sophie 2 likely uses READ+WRITE staging textures (0x30000)
+- This causes E_INVALIDARG in `tryCpuCopy()` at line 660
 
-### Option 1: Hook CopyResource + Log Resource Parameters
-Add hooks for:
-- CopyResource (vtable index 47)
-- CopySubresourceRegion (vtable index 46)
-- UpdateSubresource (vtable index 48)
+**Skipping Test Results:**
+- Skipping CopySubresourceRegion: 1.5s → 0.75s lag (50% improvement)
+- But causes visual glitches (missing text rendering)
+- Skipping CopyResource: No effect on lag, breaks cutscenes
 
-Log resource descriptions to find Arland's parameters:
-- D3D11_BUFFER_DESC: ByteWidth, Usage, BindFlags, CPUAccessFlags, MiscFlags
-- D3D11_TEXTURE2D_DESC: Width, Height, Format, Usage, BindFlags, CPUAccessFlags
+### Phase 3: CPU Shadow Buffer Approach (FAILED)
 
-Two sub-approaches:
-- **A: Hook CopyResource** - Log descriptions of src/dst resources being copied
-- **B: Hook CreateBuffer/CreateTexture2D** - See all resources created during menu opens
+**What We Tried:**
+- Created CPU shadow buffers to mirror DYNAMIC and STAGING GPU textures
+- Intercepted Map() to redirect reads/writes to CPU shadow memory
+- Intercepted CopySubresourceRegion() to do CPU memcpy instead of GPU copy
+- Goal: eliminate GPU-CPU sync by keeping all operations CPU-side
 
-Goal: Compare Arland's parameters to Sophie 2's and adapt shadow buffer creation logic.
+**Results:**
+- Successfully intercepted 2000+ CopySubresourceRegion calls
+- All calls found valid SRC shadows and performed CPU copies
+- **FAILED:** Visual glitches (black regions, missing text, corrupted rendering)
 
-### Option 2: RenderDoc Capture
-- Capture frame during menu open
-- Identify exact D3D11 operation sequence
-- Measure timing of individual operations
-- Confirm CopyResource hypothesis
+**Why It Failed:**
+The game's rendering pipeline includes GPU processing steps that CPU shadows cannot capture:
 
-### Option 3: Implement Shadow Buffers
-If CopyResource confirmed as bottleneck:
-- Create CPU-side shadow copies of GPU resources
-- Intercept CopyResource and copy from shadow instead
-- Requires matching resource parameters (why doitsujin's fix failed on Arland)
+```
+1. CPU Map/Write    → Texture A (various pointers)       [We shadow this ✓]
+2. GPU Render       → Texture A → Texture B (0x16b8xxx)  [We can't see this ✗]
+3. GPU CopySubregion → Texture B → STAGING C             [We intercept but B has GPU data]
+4. CPU Map/Read     → STAGING C                          [We return shadow with wrong data]
+```
 
-### Option 4: Accept Defeat
-If shadow buffers also fail:
-- Document findings
-- Consider DXVK-level fix
-- Or accept game is unfixable
+**Key Evidence:**
+- SRC textures in CopySubresourceRegion: `0x16b8f10`, `0x16b8b50`, `0x16b8790`
+- These pointers **never appear in Map() calls** - they're purely GPU-generated
+- Our CPU shadows copied from wrong textures, missing GPU-rendered content
+- Game read corrupted shadow data → visual artifacts
 
-## Key Questions
+**Conclusion:**
+CPU-only shadow buffers cannot work when GPU rendering creates intermediate textures between Map operations. Would need GPU pipeline hooks (impossible) or different approach.
 
-1. Are CopyResource operations happening during menu opens?
-2. If yes, how many and what resource types (buffers vs textures)?
-3. What are Arland's resource parameters (Usage, CPUAccessFlags, BindFlags)?
-4. How do Arland's parameters differ from Sophie 2's?
-5. Can we modify doitsujin's shadow buffer logic to work with Arland's parameters?
+## Selective Skipping Strategies
+
+**Problem:** Pointer-based tracking unreliable due to DXVK object pooling/reuse. Need alternative methods to identify which copies are critical vs wasteful.
+
+### Option A: Percentage-Based Skipping (Simplest)
+
+**Approach:**
+- Skip N% of copies (e.g., 90%, 95%, 99%)
+- Let through every 10th/20th/100th copy
+- Use simple counter: `if (++counter % 10 != 0) skip;`
+
+**Pros:**
+- Dead simple implementation
+- Zero tracking overhead
+- Immediate testing
+
+**Cons:**
+- Blind guessing - might skip critical copies
+- No learning/adaptation
+
+### Option B: Map(READ) Rate Tracking (Diagnostic)
+
+**Approach:**
+- Count total CopySubresourceRegion calls
+- Count total Map(READ) calls on STAGING textures
+- Calculate ratio: `read_count / copy_count`
+- If ratio is low (e.g., 5%), most copies are wasted
+
+**Pros:**
+- Tells us if skipping is viable at all
+- No pointer tracking needed (just counts)
+- Informs how aggressive Option A can be
+
+**Cons:**
+- Doesn't tell us WHICH copies to skip
+- Purely diagnostic, not a fix
+
+### Option C: Texture Content Checksumming (Most Robust)
+
+**Approach:**
+- When game Maps DYNAMIC texture for WRITE: checksum pixel data before Unmap
+- When game Maps STAGING texture for READ: checksum pixel data, mark checksum as "used"
+- Build allowlist of checksums that are actually read
+- Skip CopySubresourceRegion for textures whose checksums never appear in reads
+
+**Pros:**
+- Identifies specific texture content that's needed
+- Works despite pointer reuse (content-based, not pointer-based)
+- Can build profile over multiple gameplay sessions
+
+**Cons:**
+- CPU cost of checksumming ~1MB textures (but still < 1500ms GPU sync cost)
+- Complex implementation
+- Requires extra Map(WRITE) calls on STAGING to checksum after copy
+
+**Implementation Plan:**
+1. Try Option A first (quick test)
+2. Implement Option B to validate hypothesis
+3. If B shows low ratio, implement Option C for surgical skipping
+
+
 
 ## References
 - doitsujin atelier-sync-fix: https://github.com/doitsujin/atelier-sync-fix
 - Sophie 2 had CopyResource → Map(READ_WRITE) pattern causing sync
-- Arland may have similar but with different resource formats/usage flags
+- Arland has DYNAMIC WRITE → STAGING READ pattern
+- DXVK private data gotcha: wrapper objects don't preserve SetPrivateDataInterface across calls

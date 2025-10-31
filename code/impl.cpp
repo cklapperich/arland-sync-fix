@@ -1,7 +1,11 @@
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <cstring>
+#include <fstream>
 #include <iomanip>
 #include <sstream>
+#include <unordered_map>
 
 #include "impl.h"
 #include "util.h"
@@ -13,24 +17,16 @@ using PFN_ID3D11DeviceContext_Map = HRESULT (STDMETHODCALLTYPE *) (ID3D11DeviceC
   ID3D11Resource*, UINT, D3D11_MAP, UINT, D3D11_MAPPED_SUBRESOURCE*);
 using PFN_ID3D11DeviceContext_Unmap = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*,
   ID3D11Resource*, UINT);
-using PFN_ID3D11DeviceContext_Flush = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*);
-using PFN_ID3D11DeviceContext_Draw = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*,
-  UINT, UINT);
-using PFN_ID3D11DeviceContext_DrawIndexed = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*,
-  UINT, UINT, INT);
-using PFN_ID3D11DeviceContext_DrawInstanced = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*,
-  UINT, UINT, UINT, UINT);
-using PFN_ID3D11DeviceContext_DrawIndexedInstanced = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*,
-  UINT, UINT, UINT, INT, UINT);
+using PFN_ID3D11DeviceContext_CopyResource = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*,
+  ID3D11Resource*, ID3D11Resource*);
+using PFN_ID3D11DeviceContext_CopySubresourceRegion = void (STDMETHODCALLTYPE *) (ID3D11DeviceContext*,
+  ID3D11Resource*, UINT, UINT, UINT, UINT, ID3D11Resource*, UINT, const D3D11_BOX*);
 
 struct ContextProcs {
   PFN_ID3D11DeviceContext_Map                   Map                   = nullptr;
   PFN_ID3D11DeviceContext_Unmap                 Unmap                 = nullptr;
-  PFN_ID3D11DeviceContext_Flush                 Flush                 = nullptr;
-  PFN_ID3D11DeviceContext_Draw                  Draw                  = nullptr;
-  PFN_ID3D11DeviceContext_DrawIndexed           DrawIndexed           = nullptr;
-  PFN_ID3D11DeviceContext_DrawInstanced         DrawInstanced         = nullptr;
-  PFN_ID3D11DeviceContext_DrawIndexedInstanced  DrawIndexedInstanced  = nullptr;
+  PFN_ID3D11DeviceContext_CopyResource          CopyResource          = nullptr;
+  PFN_ID3D11DeviceContext_CopySubresourceRegion CopySubresourceRegion = nullptr;
 };
 
 static mutex  g_hookMutex;
@@ -43,17 +39,82 @@ constexpr uint32_t HOOK_DEF_CTX = (1u << 1);
 
 uint32_t      g_installedHooks = 0u;
 
-// Config
-static bool g_enableLogging = false;  // Set to true to enable verbose logging
+// Statistics tracking for Option 2
+// Copy operation signature - tracks SRC->DST pattern
+struct CopySignature {
+  // Source texture
+  uint32_t srcWidth = 0;
+  uint32_t srcHeight = 0;
+  DXGI_FORMAT srcFormat = DXGI_FORMAT_UNKNOWN;
+  D3D11_USAGE srcUsage = D3D11_USAGE_DEFAULT;
+  uint32_t srcCPUAccessFlags = 0;
+  uint32_t srcBindFlags = 0;
 
-// Counters
-static std::atomic<uint64_t> g_drawCount = 0;
-static std::atomic<uint64_t> g_mapCount = 0;
-static std::atomic<uint64_t> g_unmapCount = 0;
-static std::atomic<uint64_t> g_flushCount = 0;
+  // Destination texture
+  uint32_t dstWidth = 0;
+  uint32_t dstHeight = 0;
+  DXGI_FORMAT dstFormat = DXGI_FORMAT_UNKNOWN;
+  D3D11_USAGE dstUsage = D3D11_USAGE_DEFAULT;
+  uint32_t dstCPUAccessFlags = 0;
+  uint32_t dstBindFlags = 0;
 
-// Timing
+  bool operator==(const CopySignature& other) const {
+    return srcWidth == other.srcWidth &&
+           srcHeight == other.srcHeight &&
+           srcFormat == other.srcFormat &&
+           srcUsage == other.srcUsage &&
+           srcCPUAccessFlags == other.srcCPUAccessFlags &&
+           srcBindFlags == other.srcBindFlags &&
+           dstWidth == other.dstWidth &&
+           dstHeight == other.dstHeight &&
+           dstFormat == other.dstFormat &&
+           dstUsage == other.dstUsage &&
+           dstCPUAccessFlags == other.dstCPUAccessFlags &&
+           dstBindFlags == other.dstBindFlags;
+  }
+};
+
+// Hash function for CopySignature
+struct CopySignatureHash {
+  size_t operator()(const CopySignature& sig) const {
+    size_t h = 0;
+    h ^= std::hash<uint32_t>{}(sig.srcWidth) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    h ^= std::hash<uint32_t>{}(sig.srcHeight) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    h ^= std::hash<int>{}(sig.srcFormat) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    h ^= std::hash<int>{}(sig.srcUsage) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    h ^= std::hash<uint32_t>{}(sig.srcCPUAccessFlags) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    h ^= std::hash<uint32_t>{}(sig.srcBindFlags) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    h ^= std::hash<uint32_t>{}(sig.dstWidth) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    h ^= std::hash<uint32_t>{}(sig.dstHeight) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    h ^= std::hash<int>{}(sig.dstFormat) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    h ^= std::hash<int>{}(sig.dstUsage) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    h ^= std::hash<uint32_t>{}(sig.dstCPUAccessFlags) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    h ^= std::hash<uint32_t>{}(sig.dstBindFlags) + 0x9e3779b9 + (h << 6) + (h >> 2);
+    return h;
+  }
+};
+
+struct CopyStats {
+  uint64_t count = 0;
+};
+
+static mutex g_statsMutex;
+static std::unordered_map<CopySignature, CopyStats, CopySignatureHash> g_copyStats;
+static std::atomic<uint64_t> g_totalCopies = 0;
+
+// Diagnostic counters
+static std::atomic<uint64_t> g_allCopySubresourceCalls = 0;
+static std::atomic<uint64_t> g_tex2dCopies = 0;
+static std::atomic<uint64_t> g_stagingDstCopies = 0;
+static std::atomic<uint64_t> g_dynamicSrcCopies = 0;
+
+// Timing for periodic reports
 static auto g_startTime = std::chrono::high_resolution_clock::now();
+static auto g_lastReportTime = std::chrono::high_resolution_clock::now();
+static constexpr double REPORT_INTERVAL_SECONDS = 1.0;  // Update every second
+
+// Statistics only - no skipping
+static std::atomic<uint64_t> g_arlandPatternCounter = 0;
 
 const ContextProcs* getContextProcs(ID3D11DeviceContext* pContext) {
   return pContext->GetType() == D3D11_DEVICE_CONTEXT_IMMEDIATE
@@ -71,28 +132,84 @@ std::string getTimestamp() {
   double seconds = duration.count() / 1000000.0;
 
   std::ostringstream oss;
-  oss << std::fixed << std::setprecision(6) << seconds;
+  oss << std::fixed << std::setprecision(3) << seconds;
   return oss.str();
 }
 
-const char* mapTypeToString(D3D11_MAP MapType) {
-  switch (MapType) {
-    case D3D11_MAP_READ:                return "READ";
-    case D3D11_MAP_WRITE:               return "WRITE";
-    case D3D11_MAP_READ_WRITE:          return "READ_WRITE";
-    case D3D11_MAP_WRITE_DISCARD:       return "WRITE_DISCARD";
-    case D3D11_MAP_WRITE_NO_OVERWRITE:  return "WRITE_NO_OVERWRITE";
-    default:                            return "UNKNOWN";
+const char* usageToString(D3D11_USAGE Usage) {
+  switch (Usage) {
+    case D3D11_USAGE_DEFAULT:   return "DEFAULT";
+    case D3D11_USAGE_IMMUTABLE: return "IMMUTABLE";
+    case D3D11_USAGE_DYNAMIC:   return "DYNAMIC";
+    case D3D11_USAGE_STAGING:   return "STAGING";
+    default:                    return "UNKNOWN";
   }
 }
 
-const char* resourceDimToString(D3D11_RESOURCE_DIMENSION Dim) {
-  switch (Dim) {
-    case D3D11_RESOURCE_DIMENSION_BUFFER:     return "Buffer";
-    case D3D11_RESOURCE_DIMENSION_TEXTURE1D:  return "Tex1D";
-    case D3D11_RESOURCE_DIMENSION_TEXTURE2D:  return "Tex2D";
-    case D3D11_RESOURCE_DIMENSION_TEXTURE3D:  return "Tex3D";
-    default:                                  return "Unknown";
+
+void printStatisticsReport() {
+  std::lock_guard lock(g_statsMutex);
+
+  uint64_t totalCopies = g_totalCopies.load();
+
+  // Open stats file in OVERWRITE mode (truncates each time)
+  std::ofstream statsFile("atfix_stats.log", std::ios::out | std::ios::trunc);
+  if (!statsFile.is_open()) {
+    return;
+  }
+
+  statsFile << "=== TEXTURE COPY/READ STATISTICS (" << getTimestamp() << "s) ===" << std::endl;
+  statsFile << std::endl;
+  statsFile << "DIAGNOSTICS:" << std::endl;
+  statsFile << "  All CopySubresourceRegion calls: " << g_allCopySubresourceCalls.load() << std::endl;
+  statsFile << "  Tex2D->Tex2D copies: " << g_tex2dCopies.load() << std::endl;
+  statsFile << "  Copies with STAGING dst: " << g_stagingDstCopies.load() << std::endl;
+  statsFile << "  Copies with DYNAMIC src: " << g_dynamicSrcCopies.load() << std::endl;
+  statsFile << std::endl;
+  statsFile << "ARLAND PATTERN:" << std::endl;
+  statsFile << "  Arland pattern (512x512 DYNAMIC->STAGING) copies: " << g_arlandPatternCounter.load() << std::endl;
+  statsFile << std::endl;
+  statsFile << "TRACKING:" << std::endl;
+  statsFile << "  Total Tex2D copies tracked: " << totalCopies << std::endl;
+  statsFile << std::endl;
+  statsFile << "Copy patterns (" << g_copyStats.size() << " unique patterns):" << std::endl;
+
+  // Sort by copy count (descending) to show most frequent patterns first
+  struct Entry {
+    CopySignature sig;
+    CopyStats stats;
+  };
+  std::vector<Entry> sorted;
+  sorted.reserve(g_copyStats.size());
+  for (const auto& [sig, stats] : g_copyStats) {
+    sorted.push_back({sig, stats});
+  }
+  std::sort(sorted.begin(), sorted.end(), [](const Entry& a, const Entry& b) {
+    return a.stats.count > b.stats.count;
+  });
+
+  for (const auto& entry : sorted) {
+    const auto& sig = entry.sig;
+    const auto& stats = entry.stats;
+
+    statsFile << "  [" << sig.srcWidth << "x" << sig.srcHeight << " "
+              << usageToString(sig.srcUsage) << " cpu=0x" << std::hex << sig.srcCPUAccessFlags
+              << " -> " << std::dec << sig.dstWidth << "x" << sig.dstHeight << " "
+              << usageToString(sig.dstUsage) << " cpu=0x" << std::hex << sig.dstCPUAccessFlags << std::dec
+              << "]: count=" << stats.count << std::endl;
+  }
+
+  statsFile << "==========================================================" << std::endl;
+  statsFile.close();
+}
+
+void maybeReportStatistics() {
+  auto now = std::chrono::high_resolution_clock::now();
+  auto elapsed = std::chrono::duration_cast<std::chrono::duration<double>>(now - g_lastReportTime);
+
+  if (elapsed.count() >= REPORT_INTERVAL_SECONDS) {
+    printStatisticsReport();
+    g_lastReportTime = now;
   }
 }
 
@@ -106,19 +223,6 @@ HRESULT STDMETHODCALLTYPE ID3D11DeviceContext_Map(
         UINT                      MapFlags,
         D3D11_MAPPED_SUBRESOURCE* pMappedResource) {
   auto procs = getContextProcs(pContext);
-
-  if (g_enableLogging) {
-    uint64_t mapNum = ++g_mapCount;
-    uint64_t drawNum = g_drawCount;
-
-    D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
-    if (pResource)
-      pResource->GetType(&dim);
-
-    log("[", getTimestamp(), "s] [Draw#", drawNum, "] Map #", mapNum,
-        " - ", mapTypeToString(MapType), " ", resourceDimToString(dim));
-  }
-
   return procs->Map(pContext, pResource, Subresource, MapType, MapFlags, pMappedResource);
 }
 
@@ -127,72 +231,128 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_Unmap(
         ID3D11Resource*           pResource,
         UINT                      Subresource) {
   auto procs = getContextProcs(pContext);
-
-  if (g_enableLogging) {
-    uint64_t unmapNum = ++g_unmapCount;
-    uint64_t drawNum = g_drawCount;
-    log("[", getTimestamp(), "s] [Draw#", drawNum, "] Unmap #", unmapNum);
-  }
-
   procs->Unmap(pContext, pResource, Subresource);
 }
 
-void STDMETHODCALLTYPE ID3D11DeviceContext_Flush(
-        ID3D11DeviceContext*      pContext) {
+
+void STDMETHODCALLTYPE ID3D11DeviceContext_CopyResource(
+        ID3D11DeviceContext*      pContext,
+        ID3D11Resource*           pDstResource,
+        ID3D11Resource*           pSrcResource) {
+  auto procs = getContextProcs(pContext);
+  procs->CopyResource(pContext, pDstResource, pSrcResource);
+}
+
+void STDMETHODCALLTYPE ID3D11DeviceContext_CopySubresourceRegion(
+        ID3D11DeviceContext*      pContext,
+        ID3D11Resource*           pDstResource,
+        UINT                      DstSubresource,
+        UINT                      DstX,
+        UINT                      DstY,
+        UINT                      DstZ,
+        ID3D11Resource*           pSrcResource,
+        UINT                      SrcSubresource,
+  const D3D11_BOX*                pSrcBox) {
   auto procs = getContextProcs(pContext);
 
-  // FLUSH FILTERING: Ignore ALL flush calls
-  if (g_enableLogging) {
-    uint64_t flushNum = ++g_flushCount;
-    uint64_t drawNum = g_drawCount;
-    log("[", getTimestamp(), "s] [Draw#", drawNum, "] Flush #", flushNum, " IGNORED");
+  uint64_t callNum = ++g_allCopySubresourceCalls;
+
+  // Log first few calls to verify hook is working
+  if (callNum <= 5) {
+    log("CopySubresourceRegion hook called! Call #", callNum);
   }
 
-  return;  // Don't actually flush
-}
+  // Track Arland pattern: DYNAMIC WRITE → STAGING READ
+  if (pDstResource && pSrcResource) {
+    D3D11_RESOURCE_DIMENSION dstDim, srcDim;
+    pDstResource->GetType(&dstDim);
+    pSrcResource->GetType(&srcDim);
 
-void STDMETHODCALLTYPE ID3D11DeviceContext_Draw(
-        ID3D11DeviceContext*      pContext,
-        UINT                      VertexCount,
-        UINT                      StartVertexLocation) {
-  auto procs = getContextProcs(pContext);
-  g_drawCount++;
-  procs->Draw(pContext, VertexCount, StartVertexLocation);
-}
+    if (dstDim == D3D11_RESOURCE_DIMENSION_TEXTURE2D && srcDim == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
+      g_tex2dCopies++;
 
-void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexed(
-        ID3D11DeviceContext*      pContext,
-        UINT                      IndexCount,
-        UINT                      StartIndexLocation,
-        INT                       BaseVertexLocation) {
-  auto procs = getContextProcs(pContext);
-  g_drawCount++;
-  procs->DrawIndexed(pContext, IndexCount, StartIndexLocation, BaseVertexLocation);
-}
+      ID3D11Texture2D* dstTex = nullptr;
+      ID3D11Texture2D* srcTex = nullptr;
+      pDstResource->QueryInterface(IID_PPV_ARGS(&dstTex));
+      pSrcResource->QueryInterface(IID_PPV_ARGS(&srcTex));
 
-void STDMETHODCALLTYPE ID3D11DeviceContext_DrawInstanced(
-        ID3D11DeviceContext*      pContext,
-        UINT                      VertexCountPerInstance,
-        UINT                      InstanceCount,
-        UINT                      StartVertexLocation,
-        UINT                      StartInstanceLocation) {
-  auto procs = getContextProcs(pContext);
-  g_drawCount++;
-  procs->DrawInstanced(pContext, VertexCountPerInstance, InstanceCount,
-                       StartVertexLocation, StartInstanceLocation);
-}
+      D3D11_TEXTURE2D_DESC dstDesc = {};
+      D3D11_TEXTURE2D_DESC srcDesc = {};
+      dstTex->GetDesc(&dstDesc);
+      srcTex->GetDesc(&srcDesc);
 
-void STDMETHODCALLTYPE ID3D11DeviceContext_DrawIndexedInstanced(
-        ID3D11DeviceContext*      pContext,
-        UINT                      IndexCountPerInstance,
-        UINT                      InstanceCount,
-        UINT                      StartIndexLocation,
-        INT                       BaseVertexLocation,
-        UINT                      StartInstanceLocation) {
-  auto procs = getContextProcs(pContext);
-  g_drawCount++;
-  procs->DrawIndexedInstanced(pContext, IndexCountPerInstance, InstanceCount,
-                              StartIndexLocation, BaseVertexLocation, StartInstanceLocation);
+      // Log first few Tex2D copies in detail
+      if (callNum <= 10) {
+        log("  Copy #", callNum, ": ",
+            srcDesc.Width, "x", srcDesc.Height, " ",
+            usageToString(srcDesc.Usage), " (cpu=0x", std::hex, srcDesc.CPUAccessFlags, ") -> ",
+            dstDesc.Width, "x", dstDesc.Height, " ",
+            usageToString(dstDesc.Usage), " (cpu=0x", dstDesc.CPUAccessFlags, ")", std::dec);
+      }
+
+      // Diagnostic: track how many copies match partial patterns
+      if (dstDesc.Usage == D3D11_USAGE_STAGING) {
+        g_stagingDstCopies++;
+        if (callNum <= 10) log("    -> STAGING dst detected, count=", g_stagingDstCopies.load());
+      }
+      if (srcDesc.Usage == D3D11_USAGE_DYNAMIC) {
+        g_dynamicSrcCopies++;
+        if (callNum <= 10) log("    -> DYNAMIC src detected, count=", g_dynamicSrcCopies.load());
+      }
+
+      // Track ALL Tex2D copy patterns
+      CopySignature copySig;
+      copySig.srcWidth = srcDesc.Width;
+      copySig.srcHeight = srcDesc.Height;
+      copySig.srcFormat = srcDesc.Format;
+      copySig.srcUsage = srcDesc.Usage;
+      copySig.srcCPUAccessFlags = srcDesc.CPUAccessFlags;
+      copySig.srcBindFlags = srcDesc.BindFlags;
+      copySig.dstWidth = dstDesc.Width;
+      copySig.dstHeight = dstDesc.Height;
+      copySig.dstFormat = dstDesc.Format;
+      copySig.dstUsage = dstDesc.Usage;
+      copySig.dstCPUAccessFlags = dstDesc.CPUAccessFlags;
+      copySig.dstBindFlags = dstDesc.BindFlags;
+
+      // Check if this matches the Arland lag pattern
+      // Pattern: 512x512 DYNAMIC -> NxN STAGING (destination size varies!)
+      bool isArlandPattern = (srcDesc.Width == 512 && srcDesc.Height == 512 &&
+                              srcDesc.Usage == D3D11_USAGE_DYNAMIC &&
+                              srcDesc.CPUAccessFlags == 0x10000 &&
+                              dstDesc.Usage == D3D11_USAGE_STAGING &&
+                              dstDesc.CPUAccessFlags == 0x20000);
+
+      if (isArlandPattern) {
+        uint64_t patternNum = ++g_arlandPatternCounter;
+        if (patternNum <= 20) {
+          log("  Arland pattern copy #", patternNum, " (",
+              dstDesc.Width, "x", dstDesc.Height, " dst)");
+        }
+      }
+
+      std::lock_guard lock(g_statsMutex);
+      auto it = g_copyStats.find(copySig);
+      if (it != g_copyStats.end()) {
+        it->second.count++;
+      } else {
+        CopyStats stats;
+        stats.count = 1;
+        g_copyStats[copySig] = stats;
+      }
+      g_totalCopies++;
+
+      dstTex->Release();
+      srcTex->Release();
+    }
+  }
+
+  // Always do the actual GPU copy (no skipping)
+  procs->CopySubresourceRegion(pContext, pDstResource, DstSubresource,
+                                DstX, DstY, DstZ, pSrcResource, SrcSubresource, pSrcBox);
+
+  // Update stats periodically
+  maybeReportStatistics();
 }
 
 #define HOOK_PROC(iface, object, table, index, proc) \
@@ -219,12 +379,11 @@ void hookProc(void* pObject, const char* pName, T** ppOrig, T* pHook, uint32_t i
     return;
   }
 
-  log("Created hook for ", pName, " @ ", reinterpret_cast<void*>(pHook));
+  log("Created hook for ", pName);
 }
 
 void hookDevice(ID3D11Device* pDevice) {
-  // No device hooks needed for minimal logging
-  log("Device created: ", pDevice);
+  log("=== hookDevice called ===");
 }
 
 void hookContext(ID3D11DeviceContext* pContext) {
@@ -238,27 +397,32 @@ void hookContext(ID3D11DeviceContext* pContext) {
     procs = &g_defContextProcs;
   }
 
-  if (g_installedHooks & flag)
+  if (g_installedHooks & flag) {
+    log("=== hookContext: Already hooked ===");
     return;
+  }
 
-  log("Hooking context ", pContext);
+  log("=== hookContext: Installing hooks ===");
 
-  // Map/Unmap/Flush hooks
+  // Map/Unmap hooks (passthrough)
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 14, Map);
   HOOK_PROC(ID3D11DeviceContext, pContext, procs, 15, Unmap);
-  HOOK_PROC(ID3D11DeviceContext, pContext, procs, 27, Flush);
 
-  // Draw counting hooks
-  HOOK_PROC(ID3D11DeviceContext, pContext, procs, 13, Draw);
-  HOOK_PROC(ID3D11DeviceContext, pContext, procs, 12, DrawIndexed);
-  HOOK_PROC(ID3D11DeviceContext, pContext, procs, 20, DrawInstanced);
-  HOOK_PROC(ID3D11DeviceContext, pContext, procs, 21, DrawIndexedInstanced);
+  // Copy operation hooks for tracking
+  HOOK_PROC(ID3D11DeviceContext, pContext, procs, 47, CopyResource);
+  HOOK_PROC(ID3D11DeviceContext, pContext, procs, 46, CopySubresourceRegion);
 
   g_installedHooks |= flag;
 
   /* Immediate context and deferred context methods may share code */
   if (flag & HOOK_IMM_CTX)
     g_defContextProcs = g_immContextProcs;
+
+  log("=== hookContext: Hooks installed successfully ===");
+
+  // Write initial empty statistics report to verify file creation works
+  printStatisticsReport();
+  log("=== Initial statistics report written to atfix_stats.log ===");
 }
 
 }
