@@ -60,6 +60,7 @@ All other menu text renders GPU-only (no readback). I think that only these dyna
   5. Unmap
 
 For each of ~1,018 glyphs:
+```
 ┌─────────────────────────────────┐
 │ CPU: Map(WRITE_DISCARD)         │ Maps DYNAMIC texture for writing
 │      on DYNAMIC texture          │
@@ -178,13 +179,6 @@ Interpretation: Operations are mostly sequential with occasional
                frame boundaries or other game processing
 ```
 
-### ⚠️ Option 4: Stable Texture IDs
-- Hook CreateTexture2D/Release
-- Assign stable IDs independent of pointers
-- Track texture lifetime and content
-- **Problem:** Complex, requires hooking ID3D11Device interface
-- **Benefit:** Would enable proper caching across pointer reuse
-
 **DXVK Metrics During Menu Opens:**
 - Queue submissions: 1-5 baseline → 1000 during menu
 - Queue syncs: 1-5 baseline → 1000 during menu
@@ -201,3 +195,9 @@ Interpretation: Operations are mostly sequential with occasional
 - doitsujin atelier-sync-fix: https://github.com/doitsujin/atelier-sync-fix
 - Sophie 2 had CopyResource → Map(READ_WRITE) pattern causing sync
 - Arland has DYNAMIC WRITE → STAGING READ pattern with different flags
+
+## Doitsujin's solution to sophie 2 copyresource issues
+
+It's actually quite simple: Instead of doing all those nasty CopyResource calls on the GPU, we just do them on the CPU.
+
+However, we can't just map the GPU resources directly for the most part, so for each GPU resource that's being copied into a staging buffer, we create another staging buffer - but unlike the game, we keep it around, and update it each time the GPU resource itself gets updated. By the time the game calls CopyResource, the GPU may not be done using all those shadow resources yet, so we will still synchronize, but at worst we'll now synchronize with one single copy command from the previous frame, not with dozens of copy commands in the current frame.
