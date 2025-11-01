@@ -34,6 +34,7 @@ add_project_link_arguments(cpp.get_supported_link_arguments(link_args), language
 d3d11_src = files([
   'impl.cpp',
   'main.cpp',
+  'trace.cpp',
 ])
 
 minhook_src = files([

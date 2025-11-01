@@ -2,21 +2,9 @@
 
 **Problem:** Arland DX games have 1.5s lag when opening menus (Rorona/Totori/Meruru DX on Linux/DXVK)
 
-**Root Cause:** ~3000 GPU CopySubresourceRegion calls per menu open, each forcing CPU-GPU sync
+**Root Cause:** ~931 GPU CopySubresourceRegion calls per menu open, each forcing CPU-GPU sync. Each of 15 numeric characters rendered ~31 times (massive redundancy).
 
-**Current State:** Statistics gathered. Found extremely uniform pattern: ~875-900 copies per menu open, ALL matching `512x512 DYNAMIC→STAGING`. Skipping all copies gives 50% improvement but causes glitches. Need to identify which subset of copies is critical.
-
-**Implementation Status:**
-- ✅ Implemented texture signature-based statistics tracking
-- ✅ Gathered in-game data: 875 copies per menu open, 100% uniform pattern
-- ⏳ Next: Implement selective skipping strategies (Options A→B→C)
-
-**Statistics Results:**
-- Menu open delta: 2975→3850 copies = **875 copies per menu**
-- Pattern: `512x512 DYNAMIC cpu=0x10000 → STAGING cpu=0x20000` (100% of copies)
-- Only 1 other pattern seen: `1x1 STAGING→DEFAULT` (irrelevant)
-
----
+**Current State:** Statistics gathered. Found ~931 copies per menu open, ALL matching the Arland pattern: `512x512 DYNAMIC→STAGING at position (0,0,0)`. Skipping all copies gives 50% improvement but causes missing text (15 numeric characters break).
 
 ## Background
 
@@ -128,66 +116,184 @@ The game's rendering pipeline includes GPU processing steps that CPU shadows can
 **Conclusion:**
 CPU-only shadow buffers cannot work when GPU rendering creates intermediate textures between Map operations. Would need GPU pipeline hooks (impossible) or different approach.
 
-## Selective Skipping Strategies
+## Phase 4: Map(READ) Tracking Results
 
-**Problem:** Pointer-based tracking unreliable due to DXVK object pooling/reuse. Need alternative methods to identify which copies are critical vs wasteful.
+**Latest instrumentation with Map(READ) counting:**
 
-### Option A: Percentage-Based Skipping (Simplest)
+Menu open delta:
+- STAGING copies: 2783 - 1016 = **1767 copies**
+- STAGING reads: 2782 - 1015 = **1767 reads**
+- Waste ratio: **~0%**
 
-**Approach:**
-- Skip N% of copies (e.g., 90%, 95%, 99%)
-- Let through every 10th/20th/100th copy
-- Use simple counter: `if (++counter % 10 != 0) skip;`
+**Key Finding:** THERE ARE NO WASTEFUL COPIES. Every copy is immediately followed by a Map(READ).
 
-**Pros:**
-- Dead simple implementation
-- Zero tracking overhead
-- Immediate testing
+**Actual Copy Pattern (from logs):**
+```
+Copy: 512x512 DYNAMIC → 200x200 STAGING (partial region copy)
+Map(READ): 512x512 STAGING texture
+```
 
-**Cons:**
-- Blind guessing - might skip critical copies
-- No learning/adaptation
+Pattern repeats 1767 times during menu open. This is **texture atlas packing** - copying 200x200 subregions from rendered glyphs.
 
-### Option B: Map(READ) Rate Tracking (Diagnostic)
+**Why Is It Slow?**
 
-**Approach:**
-- Count total CopySubresourceRegion calls
-- Count total Map(READ) calls on STAGING textures
-- Calculate ratio: `read_count / copy_count`
-- If ratio is low (e.g., 5%), most copies are wasted
+The 1.5s lag comes from CPU-GPU synchronization on every copy:
 
-**Pros:**
-- Tells us if skipping is viable at all
-- No pointer tracking needed (just counts)
-- Informs how aggressive Option A can be
+```
+For each of 1767 textures:
+1. GPU renders glyph to 512x512 DYNAMIC texture
+2. CopySubresourceRegion(DYNAMIC → STAGING, 200x200 box)  ← Forces GPU flush
+3. Map(READ) on STAGING                                    ← CPU waits for GPU
+4. CPU reads pixel data (likely for atlas building)
+5. Unmap
+```
 
-**Cons:**
-- Doesn't tell us WHICH copies to skip
-- Purely diagnostic, not a fix
+Total: 1767 × ~0.85ms per sync = ~1.5s
 
-### Option C: Texture Content Checksumming (Most Robust)
+**Breakdown of 1.5s lag:**
+- ~0.75s: GPU rendering 1767 glyphs
+- ~0.75s: CPU-GPU sync overhead from Map(READ) waiting
 
-**Approach:**
-- When game Maps DYNAMIC texture for WRITE: checksum pixel data before Unmap
-- When game Maps STAGING texture for READ: checksum pixel data, mark checksum as "used"
-- Build allowlist of checksums that are actually read
-- Skip CopySubresourceRegion for textures whose checksums never appear in reads
+**Why Phase 2's "Skip CopySubresourceRegion" gave 50% speedup:**
+- Skipping copy → Map(READ) reads uninitialized data instantly (no GPU wait)
+- Eliminates the sync overhead (~0.75s saved)
+- But GPU rendering still happens (~0.75s remains)
+- Text disappears because CPU gets garbage data for atlas building
 
-**Pros:**
-- Identifies specific texture content that's needed
-- Works despite pointer reuse (content-based, not pointer-based)
-- Can build profile over multiple gameplay sessions
+## Phase 5: Map(READ) Caching Test (COMPLETED)
 
-**Cons:**
-- CPU cost of checksumming ~1MB textures (but still < 1500ms GPU sync cost)
-- Complex implementation
-- Requires extra Map(WRITE) calls on STAGING to checksum after copy
+**Implementation:** Cache first Map(READ) result per texture pointer, return cached data on subsequent reads.
 
-**Implementation Plan:**
-1. Try Option A first (quick test)
-2. Implement Option B to validate hypothesis
-3. If B shows low ratio, implement Option C for surgical skipping
+**Results:**
+- Menu lag: 1.5s → 0.75s (50% improvement)
+- Text rendering: Corrupted (wrong letters, garbled layout)
+- Happens immediately on first menu open, not just when values change
 
+**Why it failed:**
+- DXVK reuses texture pointers (object pooling)
+- Same pointer used for glyph 'A', then 'B', then 'C'
+- Cache returns 'A' pixels for all subsequent glyphs
+- Game builds corrupted text from wrong glyph data
+
+**Comparison with Phase 2 (skipping CopySubresourceRegion):**
+- Skipping copies: STAGING has uninitialized memory → no text displays at all
+- Cached reads: STAGING has wrong glyph → text displays but corrupted
+- Both fail immediately, not dependent on value changes
+
+## Phase 6: Content-Based Caching Investigation
+
+**Theory:** Cache readback data by content (first N bytes as key) to avoid GPU syncs on duplicate glyphs.
+
+**Why This Doesn't Work - Chicken and Egg Problem:**
+
+To use content-based caching:
+1. Need to identify which glyph before doing GPU sync
+2. To identify glyph → need to read pixel data
+3. To read pixel data → need Map(READ)
+4. Map(READ) → **GPU sync** (the thing we're trying to avoid!)
+
+**The fundamental issue:** We can't know the content without reading it, and we can't read it without syncing.
+
+**Alternative approaches considered:**
+- Hash first N bytes: Still requires Map(READ) to extract bytes for hashing
+- Track copy source pointers: DXVK reuses pointers (unreliable)
+- Cache by texture pointer: DXVK object pooling breaks this (proven in Phase 5)
+- Cache by frame number: No correlation to menu text content
+
+**Key insight:** Any caching solution needs a stable texture ID/handle, and pointer-based approaches are unreliable in DXVK.
+
+**Conclusion:** Content-based caching cannot avoid the initial GPU sync. Best case: first menu open slow, subsequent faster (but user's stats change every menu, so limited benefit).
+
+## Phase 7: The (0,0,0) Discovery (COMPLETED)
+
+**Discovery:** When skipping CopySubresourceRegion, only ~50 characters break on main menu:
+- "Population" value
+- "Development points" value
+- "Next rank" value
+- Rest of menu text remains intact (rendered via different pipeline - GPU-only, no readbacks)
+
+**Investigation:** Added destination position tracking to understand the copy pattern.
+
+**Results:**
+```
+DESTINATION POSITIONS:
+  Unique destination positions: 1
+  Top destination positions:
+    (0,0,0): 2998 copies
+```
+
+**ALL copies go to position (0,0,0)!**
+
+## What This Means
+
+The game is **NOT** building a texture atlas. It's using the STAGING texture as a **temporary scratchpad**.
+
+**The actual pattern:**
+```
+For each of ~931 glyphs per menu open:
+1. GPU renders glyph to 512x512 DYNAMIC texture
+2. CopySubresourceRegion(DYNAMIC → STAGING at position 0,0,0)  [overwrites previous]
+3. Map(READ) on STAGING texture
+4. CPU processes the glyph pixels (likely for layout/metrics)
+5. Unmap
+6. Repeat with next glyph (position 0,0,0 gets overwritten)
+```
+
+**Why only 15 numeric characters break when skipping copies:**
+- **Confirmed via testing:** On main menu, only the **numeric values** fail to render when copies are skipped:
+  - "Population" value (e.g., "123456" = 6 digits)
+  - "Development points" value (e.g., "9999" = 4 digits)
+  - "Next rank" value (e.g., "50000" = 5 digits)
+  - **Total: ~15 numeric characters**
+- All other menu text (titles, labels, button text, even the label portions like "Population:") renders correctly without readbacks
+- Most menu text uses GPU-only rendering pipeline (no CPU readback needed)
+- Only these dynamic numeric values use the readback pipeline
+
+**Important note:** The stat values don't change frequently during normal gameplay. When testing with sequential menu opens where values remain constant, the same glyphs are re-rendered and re-read every time (no caching in game engine).
+
+**Key insight:** The copies are sequential and non-persistent. Each glyph overwrites the previous one at (0,0,0). The game doesn't need an atlas - it processes glyphs one-by-one and discards the readback data after processing.
+
+**Why this is slow:**
+Each of the ~931 readbacks forces a GPU sync. The game could batch these or cache results, but instead does them sequentially with full CPU-GPU synchronization each time.
+
+**Critical Constraint:**
+We **cannot** distinguish "menu open copies" from "cutscene copies" from "startup copies" at the D3D11 API level. All we can detect is the Arland pattern itself. Any solution must work globally across all game contexts.
+
+**Why Can't We Use Smart Caching?**
+- **Content-hash caching**: Requires Map(READ) to get content → triggers the expensive GPU sync we're trying to avoid (chicken-and-egg problem)
+- **Pointer-based caching**: DXVK/game reuses same pointers for different glyphs (proven in Phase 5)
+- **Sequence-based tracking**: No way to know when a "burst" starts/ends or what game context we're in
+
+**Key Observation:**
+Skipping **all** Arland pattern copies doesn't crash the game - it only causes missing/corrupted text. This proves the copies aren't structurally necessary, only the readback data matters for text rendering.
+
+**Remaining Questions:**
+1. **Why redundancy per character?** Possible explanations:
+   - Multiple font sizes/styles rendered but only one used?
+   - Antialiasing passes
+   - Game engine bug (rendering same glyph unnecessarily)?
+
+2. **Are the copies identical or different?**
+   - Same source texture pointer repeated? (suggests identical glyph)
+   - Different source pointers? (suggests different rendering passes)
+   - Same box dimensions? (suggests same glyph region being copied)
+
+3. **Timing pattern:**
+   - Do copies happen in rapid burst (<100ms)?
+   - Or spread across the entire menu session?
+   - Are there natural gaps we can exploit?
+
+**Next Investigative Steps:**
+1. Track source texture pointer patterns
+2. Track box dimensions across consecutive copies (are they identical?)
+3. Track timing between copies (tight bursts vs spread out?)
+4. Count unique src/dst pointers used during a single menu open
+
+**Option: Texture Lifecycle Tracking**
+- Hook CreateTexture2D and Release to track texture allocation/deallocation
+- Assign stable IDs to textures independent of pointer values
+- Enables "copy count per texture ID" tracking that survives pointer reuse
+- More complex, requires hooking ID3D11Device interface
 
 
 ## References
