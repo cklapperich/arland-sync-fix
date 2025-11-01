@@ -29,4 +29,11 @@ void trackStagingTexture(void* pResource);
 void untrackStagingTexture(void* pResource);
 bool isStagingTextureTracked(void* pResource);
 
+// Track mapped texture data for Unmap checksum calculation (for WRITE operations)
+void trackMappedTextureData(void* pResource, const void* pData, UINT rowPitch, UINT width, UINT height, DXGI_FORMAT format);
+uint32_t getAndClearMappedChecksum(void* pResource);
+
+// Calculate checksum of mapped texture data
+uint32_t calculateTextureChecksum(const void* pData, UINT rowPitch, UINT width, UINT height, DXGI_FORMAT format);
+
 }

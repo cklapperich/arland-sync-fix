@@ -57,8 +57,11 @@ HRESULT STDMETHODCALLTYPE ID3D11DeviceContext_Map(
         D3D11_MAPPED_SUBRESOURCE* pMappedResource) {
   auto procs = getContextProcs(pContext);
 
-  // Log Map operations on Tex2D (if logging active)
-  if (isTraceLoggingActive() && pResource) {
+  // Call real Map first
+  HRESULT hr = procs->Map(pContext, pResource, Subresource, MapType, MapFlags, pMappedResource);
+
+  // Log Map operations on Tex2D (if logging active and Map succeeded)
+  if (SUCCEEDED(hr) && isTraceLoggingActive() && pResource && pMappedResource) {
     D3D11_RESOURCE_DIMENSION dim;
     pResource->GetType(&dim);
 
@@ -72,6 +75,11 @@ HRESULT STDMETHODCALLTYPE ID3D11DeviceContext_Map(
       // Log Map(READ) on STAGING textures
       if ((MapType == D3D11_MAP_READ || MapType == D3D11_MAP_READ_WRITE) &&
           desc.Usage == D3D11_USAGE_STAGING) {
+        // Calculate checksum of the data
+        uint32_t checksum = calculateTextureChecksum(pMappedResource->pData,
+                                                      pMappedResource->RowPitch,
+                                                      desc.Width, desc.Height, desc.Format);
+
         std::ostringstream oss;
         oss << "[" << getLogTimestamp() << "] Map"
             << " type=" << mapTypeToString(MapType)
@@ -81,7 +89,8 @@ HRESULT STDMETHODCALLTYPE ID3D11DeviceContext_Map(
             << " usage=" << usageToString(desc.Usage)
             << " cpu=0x" << std::hex << desc.CPUAccessFlags << std::dec
             << " bind=0x" << std::hex << desc.BindFlags << std::dec
-            << " fmt=" << desc.Format;
+            << " fmt=" << desc.Format
+            << " checksum=0x" << std::hex << checksum << std::dec;
         writeTraceLog(oss.str());
 
         // Track this texture for Unmap logging
@@ -104,16 +113,17 @@ HRESULT STDMETHODCALLTYPE ID3D11DeviceContext_Map(
             << " fmt=" << desc.Format;
         writeTraceLog(oss.str());
 
-        // Track this texture for Unmap logging
+        // Track this texture for Unmap checksum calculation
         trackStagingTexture(pResource);
+        trackMappedTextureData(pResource, pMappedResource->pData, pMappedResource->RowPitch,
+                                desc.Width, desc.Height, desc.Format);
       }
 
       tex->Release();
     }
   }
 
-  // Call real Map
-  return procs->Map(pContext, pResource, Subresource, MapType, MapFlags, pMappedResource);
+  return hr;
 }
 
 void STDMETHODCALLTYPE ID3D11DeviceContext_Unmap(
@@ -123,12 +133,20 @@ void STDMETHODCALLTYPE ID3D11DeviceContext_Unmap(
   auto procs = getContextProcs(pContext);
 
   // Log Unmap on tracked textures (STAGING and DYNAMIC) (if logging active)
+  // IMPORTANT: Calculate checksum BEFORE calling real Unmap (while data is still mapped)
   if (isTraceLoggingActive() && pResource) {
     if (isStagingTextureTracked(pResource)) {
       std::ostringstream oss;
       oss << "[" << getLogTimestamp() << "] Unmap"
           << " res=0x" << std::hex << pResource << std::dec
           << " sub=" << Subresource;
+
+      // Check if we have tracked mapped data (for WRITE_DISCARD operations)
+      uint32_t checksum = getAndClearMappedChecksum(pResource);
+      if (checksum != 0) {
+        oss << " checksum=0x" << std::hex << checksum << std::dec;
+      }
+
       writeTraceLog(oss.str());
 
       // Remove from tracking (unmap completes the Map/Unmap pair)

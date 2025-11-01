@@ -22,6 +22,17 @@ static auto g_logStartTime = std::chrono::high_resolution_clock::now();
 static mutex g_stagingTexMutex;
 static std::unordered_map<void*, bool> g_trackedStagingTextures;
 
+// Track mapped data for Unmap checksum calculation (for WRITE operations)
+struct MappedTextureData {
+  void* pData;
+  UINT rowPitch;
+  UINT width;
+  UINT height;
+  DXGI_FORMAT format;
+};
+static mutex g_mappedDataMutex;
+static std::unordered_map<void*, MappedTextureData> g_trackedMappedData;
+
 // Background thread for F9 polling
 static std::atomic<bool> g_shutdownThread = false;
 static std::thread g_hotkeyThread;
@@ -80,6 +91,23 @@ bool isStagingTextureTracked(void* pResource) {
   return g_trackedStagingTextures.find(pResource) != g_trackedStagingTextures.end();
 }
 
+void trackMappedTextureData(void* pResource, const void* pData, UINT rowPitch, UINT width, UINT height, DXGI_FORMAT format) {
+  std::lock_guard lock(g_mappedDataMutex);
+  g_trackedMappedData[pResource] = {const_cast<void*>(pData), rowPitch, width, height, format};
+}
+
+uint32_t getAndClearMappedChecksum(void* pResource) {
+  std::lock_guard lock(g_mappedDataMutex);
+  auto it = g_trackedMappedData.find(pResource);
+  if (it != g_trackedMappedData.end()) {
+    auto& data = it->second;
+    uint32_t checksum = calculateTextureChecksum(data.pData, data.rowPitch, data.width, data.height, data.format);
+    g_trackedMappedData.erase(it);  // Remove after checksum (Unmap completes the pair)
+    return checksum;
+  }
+  return 0;
+}
+
 void hotkeyPollingThread() {
   log(">>> Hotkey polling thread started <<<");
 
@@ -114,6 +142,10 @@ void hotkeyPollingThread() {
           {
             std::lock_guard texLock(g_stagingTexMutex);
             g_trackedStagingTextures.clear();
+          }
+          {
+            std::lock_guard dataLock(g_mappedDataMutex);
+            g_trackedMappedData.clear();
           }
 
           g_loggingActive = true;
@@ -163,6 +195,32 @@ void shutdownTraceLogging() {
   if (g_traceLog.is_open()) {
     g_traceLog.close();
   }
+}
+
+uint32_t calculateTextureChecksum(const void* pData, UINT rowPitch, UINT width, UINT height, DXGI_FORMAT format) {
+  if (!pData) return 0;
+
+  // Simple CRC32-like checksum using XOR and rotation
+  uint32_t checksum = 0x12345678;
+  const uint8_t* bytes = static_cast<const uint8_t*>(pData);
+
+  // Determine bytes per pixel based on format
+  // For now, handle common formats (format 90 is likely DXGI_FORMAT_B8G8R8A8_UNORM = 4 bytes/pixel)
+  UINT bytesPerPixel = 4;  // Default assumption for most common formats
+
+  // Calculate how many bytes to read per row (minimum of actual data and pitch)
+  UINT bytesPerRow = width * bytesPerPixel;
+
+  for (UINT row = 0; row < height; row++) {
+    const uint8_t* rowData = bytes + (row * rowPitch);
+
+    for (UINT col = 0; col < bytesPerRow; col++) {
+      // Simple hash: rotate left and XOR
+      checksum = ((checksum << 5) | (checksum >> 27)) ^ rowData[col];
+    }
+  }
+
+  return checksum;
 }
 
 }

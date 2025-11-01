@@ -67,7 +67,12 @@ All other menu text renders GPU-only (no readback). Only these dynamic numeric v
 
 ### The CPU-GPU Pipeline
 
-```
+  1. Map(WRITE_DISCARD) on DYNAMIC texture 0x2d445f0
+  2. Unmap (CPU writes data during this Map/Unmap pair)
+  3. CopySubresourceRegion: DYNAMIC 0x2d445f0 → STAGING 0x2ba4bc0  (GPU copies it)
+  4. Map(READ) on STAGING 0x2ba4bc0 (CPU reads it back - THIS CAUSES LAG)
+  5. Unmap
+
 For each of ~1,018 glyphs:
 ┌─────────────────────────────────┐
 │ CPU: Map(WRITE_DISCARD)         │ Maps DYNAMIC texture for writing
